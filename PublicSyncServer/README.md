@@ -34,14 +34,14 @@ node server.mjs
 
 ## 跨網路：Render 雲端部署方案
 
-建議先在本機完成手機驗收，再部署正式服務。正式課堂使用可選 Render 的一個付費 Node Web Service，搭配持久磁碟；所需費用以建立服務時的報價為準。本次提供設定檔，沒有代為註冊、購買或發布服務。
+目前使用 Render 免費 Web Service，不訂閱付費服務，也不配置持久磁碟。房間資料使用暫存檔案，休眠、重啟或重新部署後可能遺失；若找不到房間，請重新建立。上課前先開啟 `/health` 喚醒服務，再建立當次課程的房間。
 
 1. 本服務位於 `xingago0609/Reconstruction_ONLINE` 儲存庫的 `PublicSyncServer` 資料夾。不要上傳 `data/`。
 2. 登入 Render，新增 Web Service 並連接該儲存庫，Root Directory 填 `PublicSyncServer`。
 3. Runtime 選 Node；Build command 為 `node --version`，Start command 為 `node server.mjs`。指定 Node 22。
-4. 選擇一個付費服務實例，維持 **單一實例**。新增持久磁碟，mount path 為 `/var/data`；環境變數 `DATA_FILE=/var/data/rooms.json`。健康檢查路徑 `/health`。
+4. 選擇 Free，維持 **單一實例**、不新增磁碟；環境變數 `DATA_FILE=data/rooms.json`。健康檢查路徑 `/health`。
 5. 部署完成後，用 Render 提供的 HTTPS 網址測試 `/health`。四台手機輸入這個 HTTPS 網址與相同房間代碼，就能跨 Wi-Fi／行動網路遊玩。
-6. 也可用儲存庫根目錄的 `render.yaml` 透過 Blueprint 建立上述配置；建立前先查看服務與磁碟費用。
+6. 儲存庫根目錄的 `render.yaml` 也已設為免費方案。日後需要保留房間資料，再另行確認費用並升級付費服務與持久磁碟。
 
 免費 Render 服務適合短暫測試，但有休眠與非持久檔案系統限制。這份實作使用檔案保存房間，正式服務必須掛載持久磁碟，否則重啟／重新部署可能失去房間。
 

@@ -1,10 +1,10 @@
-# This production configuration creates a paid service and persistent disk.
-# Review the provider's current price before deploying it.
+# Free service. Room data may be lost when the service restarts or spins down.
 services:
   - type: web
     name: reconstruction-public-sync
     runtime: node
-    plan: 0.5c-512mb
+    plan: free
+    region: singapore
     rootDir: PublicSyncServer
     buildCommand: node --version
     startCommand: node server.mjs
@@ -14,8 +14,4 @@ services:
       - key: NODE_VERSION
         value: "22"
       - key: DATA_FILE
-        value: /var/data/rooms.json
-    disk:
-      name: public-card-state
-      mountPath: /var/data
-      sizeGB: 1
+        value: data/rooms.json
