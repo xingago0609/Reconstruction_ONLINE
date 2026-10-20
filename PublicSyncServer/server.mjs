@@ -58,8 +58,10 @@ export function createSyncServer({ dataFile = resolve('data/rooms.json'), now = 
       if (saved.schema !== 1 || !saved.rooms || typeof saved.rooms !== 'object') throw new Error('Unsupported room data');
       rooms = saved.rooms;
       for (const room of Object.values(rooms)) {
-        room.kickedDeviceIds = Array.isArray(room.kickedDeviceIds) ? room.kickedDeviceIds : [];
-        room.kickedTokens = Array.isArray(room.kickedTokens) ? room.kickedTokens : [];
+        // The current rule allows a removed player to rejoin. Drop legacy kick
+        // deny-lists when an older room file is loaded.
+        delete room.kickedDeviceIds;
+        delete room.kickedTokens;
         for (const player of room.players) player.lastSeen = 0;
       }
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -85,8 +87,6 @@ export function createSyncServer({ dataFile = resolve('data/rooms.json'), now = 
     return room;
   }
   function member(room, token, deviceId) {
-    if ((room.kickedTokens || []).includes(token)) reject(403, 'ROOM_KICKED');
-    if (room.kickedDeviceIds.includes(deviceId)) reject(403, 'ROOM_KICKED');
     const player = room.players.find(p => p.token === token);
     if (!player) reject(403, 'NOT_A_MEMBER');
     if (player.deviceId !== deviceId) reject(403, 'IDENTITY_MISMATCH');
@@ -97,7 +97,7 @@ export function createSyncServer({ dataFile = resolve('data/rooms.json'), now = 
     return {
       protocol: 1, roomCode: room.code, revision: room.publications.length,
       expiresAt: room.expiresAt,
-      rolesSupported: true, roomRulesVersion: 2, stateRevision: room.stateRevision || 0,
+      rolesSupported: true, roomRulesVersion: 3, stateRevision: room.stateRevision || 0,
       selfSlot: room.players.find(p => p.token === token)?.slot || 0,
       players: room.players.map(p => ({ slot: p.slot, name: p.name, role: p.role || null, online: p.lastSeen > 0 && now() - p.lastSeen < 15000 })),
       publications: room.publications,
@@ -136,7 +136,7 @@ export function createSyncServer({ dataFile = resolve('data/rooms.json'), now = 
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
       limit(req);
       if (req.method === 'GET' && (req.url === '/health' || req.url === '/')) {
-        send(200, { service: 'Reconstruction public-card sync', protocol: 1, roomRulesVersion: 2, status: 'ok' }); return;
+        send(200, { service: 'Reconstruction public-card sync', protocol: 1, roomRulesVersion: 3, status: 'ok' }); return;
       }
       const token = tokenOf(req);
       const deviceId = deviceIdOf(req.headers['x-player-device']);
@@ -154,7 +154,7 @@ export function createSyncServer({ dataFile = resolve('data/rooms.json'), now = 
         const room = commit(() => {
           const created = { code, ownerToken: token, expiresAt: now() + ROOM_TTL,
             players: [{ token, deviceId, slot: 1, name, role: null, lastSeen: now(), actionPoints: 3 }],
-            kickedDeviceIds: [], kickedTokens: [], publications: [], stateRevision: 0, gameStarted: false, century: 1, currentSlot: 1 };
+            publications: [], stateRevision: 0, gameStarted: false, century: 1, currentSlot: 1 };
           rooms[code] = created;
           return created;
         });
@@ -195,8 +195,6 @@ export function createSyncServer({ dataFile = resolve('data/rooms.json'), now = 
         if (!Number.isInteger(body.expectedRevision) || body.expectedRevision !== (room.stateRevision || 0))
           reject(409, 'ROOM_CHANGED');
         commit(() => {
-          if (target.deviceId && !room.kickedDeviceIds.includes(target.deviceId)) room.kickedDeviceIds.push(target.deviceId);
-          if (!room.kickedTokens.includes(target.token)) room.kickedTokens.push(target.token);
           room.players = room.players.filter(p => p !== target);
           room.stateRevision = (room.stateRevision || 0) + 1;
         });
@@ -216,7 +214,6 @@ export function createSyncServer({ dataFile = resolve('data/rooms.json'), now = 
       if (req.method === 'POST' && action === 'join') {
         const name = nameOf(body.name);
         if (deviceIdOf(body.deviceId) !== deviceId) reject(403, 'IDENTITY_MISMATCH');
-        if (room.kickedTokens.includes(token) || room.kickedDeviceIds.includes(deviceId)) reject(403, 'ROOM_KICKED');
         const existing = room.players.find(p => p.token === token);
         if (existing) { member(room, token, deviceId); send(200, snapshot(room, token)); return; }
         const returning = room.players.find(p => p.deviceId === deviceId);
