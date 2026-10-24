@@ -9,7 +9,8 @@ export const CARDS = new Set([
   ...[2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].map(i => `Phen${String(i).padStart(2, '0')}`),
   ...[2, 3, 4, 5, 6, 7].map(i => `Theo${String(i).padStart(2, '0')}`),
 ]);
-export const ROLES = new Set(['托勒密', '柏拉圖', '菲洛勞斯', '哥白尼']);
+export const ROLES = new Set(['菲洛勞斯', '柏拉圖', '阿里斯塔克', '尤多克斯']);
+const ROOM_RULES_VERSION = 4;
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ROOM_TTL = 24 * 60 * 60 * 1000;
 class ApiError extends Error {
@@ -84,6 +85,7 @@ export function createSyncServer({ dataFile = resolve('data/rooms.json'), now = 
   function getRoom(code) {
     const room = rooms[code];
     if (!room || room.expiresAt <= now()) reject(404, 'ROOM_NOT_FOUND');
+    if (room.roomRulesVersion !== ROOM_RULES_VERSION) reject(404, 'ROOM_RULES_CHANGED');
     return room;
   }
   function member(room, token, deviceId) {
@@ -97,7 +99,7 @@ export function createSyncServer({ dataFile = resolve('data/rooms.json'), now = 
     return {
       protocol: 1, roomCode: room.code, revision: room.publications.length,
       expiresAt: room.expiresAt,
-      rolesSupported: true, roomRulesVersion: 3, stateRevision: room.stateRevision || 0,
+      rolesSupported: true, roomRulesVersion: ROOM_RULES_VERSION, stateRevision: room.stateRevision || 0,
       selfSlot: room.players.find(p => p.token === token)?.slot || 0,
       players: room.players.map(p => ({ slot: p.slot, name: p.name, role: p.role || null, online: p.lastSeen > 0 && now() - p.lastSeen < 15000 })),
       publications: room.publications,
@@ -136,7 +138,7 @@ export function createSyncServer({ dataFile = resolve('data/rooms.json'), now = 
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
       limit(req);
       if (req.method === 'GET' && (req.url === '/health' || req.url === '/')) {
-        send(200, { service: 'Reconstruction public-card sync', protocol: 1, roomRulesVersion: 3, status: 'ok' }); return;
+        send(200, { service: 'Reconstruction public-card sync', protocol: 1, roomRulesVersion: ROOM_RULES_VERSION, status: 'ok' }); return;
       }
       const token = tokenOf(req);
       const deviceId = deviceIdOf(req.headers['x-player-device']);
@@ -152,7 +154,7 @@ export function createSyncServer({ dataFile = resolve('data/rooms.json'), now = 
         let code;
         do { code = Array.from({ length: 8 }, () => ALPHABET[randomInt(ALPHABET.length)]).join(''); } while (rooms[code]);
         const room = commit(() => {
-          const created = { code, ownerToken: token, expiresAt: now() + ROOM_TTL,
+          const created = { code, roomRulesVersion: ROOM_RULES_VERSION, ownerToken: token, expiresAt: now() + ROOM_TTL,
             players: [{ token, deviceId, slot: 1, name, role: null, lastSeen: now(), actionPoints: 3 }],
             publications: [], stateRevision: 0, gameStarted: false, century: 1, currentSlot: 1 };
           rooms[code] = created;

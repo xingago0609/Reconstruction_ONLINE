@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSyncServer, CARDS, ROLES } from './server.mjs';
@@ -20,6 +20,43 @@ async function kick(service, room, host, slot) {
   return service.call(room + '/kick', host, {slot, expectedRevision: snapshot.stateRevision});
 }
 
+test('the four reviewed roles can start a game; retired roles cannot be selected', async t => {
+  const expected = ['菲洛勞斯', '柏拉圖', '阿里斯塔克', '尤多克斯'];
+  assert.deepEqual([...ROLES], expected);
+  const service = await launch(); t.after(service.close);
+  const { room, users } = await fullRoom(service);
+  for (const role of ['托勒密', '哥白尼'])
+    assert.equal((await service.call(room + '/role', users[0], {role})).body.error, 'INVALID_ROLE');
+  for (let i = 0; i < expected.length; i++)
+    assert.equal((await service.call(room + '/role', users[i], {role: expected[i]})).status, 200);
+  const started = await service.call(room + '/start', users[0], {});
+  assert.equal(started.status, 200);
+  assert.deepEqual(started.body.players.map(p => p.role), expected);
+  assert.equal(started.body.gameStarted, true);
+});
+
+test('saved rooms with the old roster are refused without reassigning or deleting players', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'reconstruction-old-roles-'));
+  t.after(() => rmSync(dir, {recursive: true, force: true}));
+  const dataFile = join(dir, 'rooms.json');
+  let service = await launch({dataFile});
+  const { room, users } = await fullRoom(service, true);
+  await service.close();
+  const saved = JSON.parse(readFileSync(dataFile, 'utf8'));
+  const oldRoom = saved.rooms[room.split('/').pop()];
+  delete oldRoom.roomRulesVersion;
+  oldRoom.players[0].role = '托勒密';
+  writeFileSync(dataFile, JSON.stringify(saved));
+  service = await launch({dataFile}); t.after(service.close);
+  const refused = await service.call(room, users[0]);
+  assert.equal(refused.status, 404);
+  assert.equal(refused.body.error, 'ROOM_RULES_CHANGED');
+  assert.deepEqual(JSON.parse(readFileSync(dataFile, 'utf8')), saved);
+  const fresh = await service.call('/v1/rooms', token(), {name:'新房間'});
+  assert.equal(fresh.status, 201);
+  assert.equal(fresh.body.roomRulesVersion, 4);
+});
+
 test('identity is required and never exposed; token alone cannot impersonate a browser', async t => {
   const service = await launch(); t.after(service.close);
   const a = token();
@@ -27,7 +64,7 @@ test('identity is required and never exposed; token alone cannot impersonate a b
   assert.equal((await service.call('/v1/rooms', a, {name:'A', deviceId: token()})).body.error, 'IDENTITY_MISMATCH');
   const created = await service.call('/v1/rooms', a, {name:'A'});
   assert.equal(created.body.ownerSlot, created.body.selfSlot);
-  assert.equal(created.body.roomRulesVersion, 2);
+  assert.equal(created.body.roomRulesVersion, 4);
   const room = '/v1/rooms/' + created.body.roomCode;
   assert.equal((await service.call(room, a, undefined, token())).body.error, 'IDENTITY_MISMATCH');
   assert.equal((await service.call(room+'/join', a, {name:'A'}, token())).body.error, 'IDENTITY_MISMATCH');
@@ -36,17 +73,33 @@ test('identity is required and never exposed; token alone cannot impersonate a b
   assert.match(options.headers.get('access-control-allow-headers'), /X-Player-Device/);
 });
 
+test('host alone may select and change roles; only starting requires four players', async t => {
+  const service = await launch(); t.after(service.close);
+  const host = token();
+  const created = await service.call('/v1/rooms', host, {name:'單人建房測試'});
+  assert.equal(created.status, 201);
+  const room = '/v1/rooms/' + created.body.roomCode;
+  for (const role of ROLES) {
+    const selected = await service.call(room + '/role', host, {role});
+    assert.equal(selected.status, 200);
+    assert.equal(selected.body.players.length, 1);
+    assert.equal(selected.body.players[0].role, role);
+    assert.equal(selected.body.selfSlot, selected.body.ownerSlot);
+  }
+  assert.equal((await service.call(room+'/start', host, {})).body.error, 'FOUR_UNIQUE_ROLES_REQUIRED');
+});
+
 test('simultaneous selection is atomic; offline roles remain reserved and cannot be started', async t => {
   let time = Date.now();
   const service = await launch({now: () => time}); t.after(service.close);
   const {room, users} = await fullRoom(service);
   assert.equal((await service.call(room+'/publish', users[0], {cardId:'Phen04'})).body.error, 'GAME_NOT_READY');
-  const results = await Promise.all(users.slice(0,2).map(user => service.call(room+'/role', user, {role:'托勒密'})));
+  const results = await Promise.all(users.slice(0,2).map(user => service.call(room+'/role', user, {role:'菲洛勞斯'})));
   assert.equal(results.filter(r => r.status === 200).length, 1);
   assert.equal(results.filter(r => r.body.error === 'ROLE_TAKEN').length, 1);
   // Release the winner's choice by selecting a different role, then assign deterministically.
   const winner = results[0].status === 200 ? 0 : 1;
-  await service.call(room+'/role', users[winner], {role:'哥白尼'});
+  await service.call(room+'/role', users[winner], {role:'尤多克斯'});
   for (let i=0;i<4;i++) await service.call(room+'/role', users[i], {role:[...ROLES][i]});
   // Last assignment can conflict with the temporary role; move winner then retry each.
   for (let i=0;i<4;i++) await service.call(room+'/role', users[i], {role:[...ROLES][i]});
@@ -69,35 +122,33 @@ test('same browser reclaims only its offline seat, role and host status; old tok
   assert.equal(joined.status, 200);
   assert.equal(joined.body.selfSlot, 1);
   assert.equal(joined.body.ownerSlot, 1);
-  assert.equal(joined.body.players[0].role, '托勒密');
+  assert.equal(joined.body.players[0].role, '菲洛勞斯');
   assert.equal(joined.body.gameStarted, true);
   assert.equal((await service.call(room, users[0])).body.error, 'NOT_A_MEMBER');
   assert.equal((await service.call(room+'/join', token(), {name:'同名玩家'})).body.error, 'ROOM_FULL');
   assert.equal((await service.call(room, returning, undefined, original)).status, 200);
 });
 
-test('kick bans token and device, releases role, permits replacement after start, forbids slot races', async t => {
+test('kick removes a player, permits the same device to rejoin, and releases the role', async t => {
   const service = await launch(); t.after(service.close);
   const {room, users} = await fullRoom(service, true);
   const stale = (await service.call(room, users[0])).body.stateRevision;
   assert.equal((await service.call(room+'/kick', users[1], {slot:3, expectedRevision:stale})).body.error, 'NOT_OWNER');
   assert.equal((await kick(service, room, users[0], 1)).body.error, 'CANNOT_KICK_OWNER');
   assert.equal((await kick(service, room, users[0], 2)).status, 200);
-  assert.equal((await service.call(room, users[1])).body.error, 'ROOM_KICKED');
-  assert.equal((await service.call(room+'/join', users[1], {name:'換名'})).body.error, 'ROOM_KICKED');
-  assert.equal((await service.call(room+'/join', token(), {name:'換token'}, device(users[1]))).body.error, 'ROOM_KICKED');
-  assert.equal((await service.call(room+'/join', users[1], {name:'換device'}, token())).body.error, 'ROOM_KICKED');
+  assert.equal((await service.call(room, users[1])).body.error, 'NOT_A_MEMBER');
+  const returning = token();
+  const rejoined = await service.call(room+'/join', returning, {name:'誤踢後回來'}, device(users[1]));
+  assert.equal(rejoined.status, 200);
+  assert.equal(rejoined.body.selfSlot, 2);
+  assert.equal(rejoined.body.players.find(p => p.slot === 2).role, null);
+  assert.equal((await service.call(room+'/role', returning, {role:'柏拉圖'}, device(users[1]))).status, 200);
+  assert.equal((await service.call(room+'/role', returning, {role:'尤多克斯'}, device(users[1]))).body.error, 'GAME_ALREADY_STARTED');
+  assert.equal((await service.call(room+'/publish', returning, {cardId:'Phen04'}, device(users[1]))).status, 200);
+  assert.equal((await service.call(room+'/join', token(), {name:'同裝置仍在線'}, device(users[1]))).body.error, 'DEVICE_ALREADY_ONLINE');
   assert.equal((await service.call(room+'/join', token(), {name:'省略身分'}, null)).body.error, 'INVALID_DEVICE_ID');
-  const replacement = token();
-  const joined = await service.call(room+'/join', replacement, {name:'替補'});
-  assert.equal(joined.body.selfSlot, 2);
-  assert.equal(joined.body.players.find(p => p.slot === 2).role, null);
-  assert.equal((await service.call(room+'/publish', replacement, {cardId:'Phen04'})).body.error, 'GAME_NOT_READY');
-  assert.equal((await service.call(room+'/role', replacement, {role:'柏拉圖'})).status, 200);
-  assert.equal((await service.call(room+'/role', replacement, {role:'哥白尼'})).body.error, 'GAME_ALREADY_STARTED');
   assert.equal((await service.call(room+'/kick', users[0], {slot:2, expectedRevision:stale})).body.error, 'ROOM_CHANGED');
-  assert.equal((await service.call(room+'/publish', replacement, {cardId:'Phen04'})).status, 200);
-  // A ban is scoped to this room, not the whole service.
+  // Removing a player is scoped to this room; the same device may create another room too.
   assert.equal((await service.call('/v1/rooms', users[1], {name:'新房主'})).status, 201);
 });
 
@@ -116,7 +167,7 @@ test('start is host-only and idempotent; all players see the same start without 
   }
 });
 
-test('voluntary leave frees a seat, host leave ends room, bans survive server restart', async t => {
+test('voluntary leave frees a seat, host leave ends room, and a removed player can rejoin after restart', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'reconstruction-identity-'));
   t.after(() => rmSync(dir, {recursive:true, force:true}));
   const dataFile = join(dir, 'rooms.json');
@@ -125,7 +176,9 @@ test('voluntary leave frees a seat, host leave ends room, bans survive server re
   await kick(service, room, users[0], 2);
   await service.close();
   service = await launch({dataFile}); t.after(service.close);
-  assert.equal((await service.call(room+'/join', token(), {name:'被踢重試'}, device(users[1]))).body.error, 'ROOM_KICKED');
+  const rejoined = await service.call(room+'/join', token(), {name:'誤踢後回來'}, device(users[1]));
+  assert.equal(rejoined.status, 200);
+  assert.equal(rejoined.body.selfSlot, 2);
   assert.equal((await service.call(room+'/leave', users[2], {})).body.left, true);
   assert.equal((await service.call(room+'/join', users[2], {name:'主動離開可回來'})).status, 200);
   assert.equal((await service.call(room+'/leave', users[0], {})).body.roomClosed, true);

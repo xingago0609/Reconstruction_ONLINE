@@ -1,0 +1,33 @@
+{
+  "version": "2026-10-24-role-stories",
+  "roomRulesVersion": 4,
+  "theoryTimeCost": 2,
+  "roles": [
+    "菲洛勞斯",
+    "柏拉圖",
+    "阿里斯塔克",
+    "尤多克斯"
+  ],
+  "files": [
+    {
+      "path": "Build/WebGL-20261024.data.unityweb",
+      "bytes": 17245772,
+      "sha256": "86900258d13ef26f1f93bcafd7e151a638fd983fff36c4aeba2d7a8758d61380"
+    },
+    {
+      "path": "Build/WebGL-20261024.framework.js.unityweb",
+      "bytes": 72259,
+      "sha256": "eb90d4fdb4219545461badec08460167f1920e3673468a571c6b7533209a0db8"
+    },
+    {
+      "path": "Build/WebGL-20261024.loader.js",
+      "bytes": 43704,
+      "sha256": "e9905a5ea08586e326b0b826bce372ac477c0d7b613a26dfc4ab8c1c836aed95"
+    },
+    {
+      "path": "Build/WebGL-20261024.wasm.unityweb",
+      "bytes": 4017698,
+      "sha256": "225b86c62a54a569c9846f553241636ac12acc48038d8e066d3e59a43a09ea84"
+    }
+  ]
+}
